@@ -1,0 +1,4 @@
+Notes for if we want in the future: 
+
+Waking up from external (alert) signal:
+https://github.com/espressif/esp-idf/blob/d4cd437ede613fffacc06ac6d6c93a083829022f/examples/system/deep_sleep/main/ext_wakeup.c
