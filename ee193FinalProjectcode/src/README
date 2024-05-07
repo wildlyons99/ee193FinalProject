@@ -1,4 +1,15 @@
 Notes for if we want in the future: 
 
+Esp Sleep modes: 
+https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/api-reference/system/sleep_modes.html?highlight=sleep#api-reference-wakeup-source
+
 Waking up from external (alert) signal:
 https://github.com/espressif/esp-idf/blob/d4cd437ede613fffacc06ac6d6c93a083829022f/examples/system/deep_sleep/main/ext_wakeup.c
+
+Flash read / write example:
+https://github.com/espressif/esp-idf/blob/d4cd437ede613fffacc06ac6d6c93a083829022f/examples/storage/nvs_rw_value/main/nvs_value_example_main.c
+
+
+
+some more logging info: 
+https://github.com/espressif/esp-idf/blob/d4cd437ede613fffacc06ac6d6c93a083829022f/examples/system/deep_sleep_wake_stub/main/rtc_wake_stub_example.c
