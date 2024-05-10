@@ -6,11 +6,12 @@
 
 
 #include "mqtt_client.h"
+#include "esp_event.h"
+
 #include "minimal_wifi.h"
 #include "esp_mac.h"
 
 #include "esp_adc/adc_oneshot.h"
-
 
 #include "esp_sleep.h"
 #include "esp_log.h"
@@ -27,6 +28,8 @@
 #define WIFI_PASS      ""
 
 #define BROKER_URI "mqtt://en1-pi.eecs.tufts.edu"
+
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data); 
 
 
 void app_main() {
@@ -52,6 +55,8 @@ MQTT
     printf("Connecting to WiFi...");
     wifi_connect(WIFI_SSID, WIFI_PASS);
 
+    vTaskDelay(1000);
+
     // Initialize the MQTT client
     // Read the documentation for more information on what you can configure:
     // https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/api-reference/protocols/mqtt.html
@@ -60,6 +65,9 @@ MQTT
     };
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_start(client);
+
+    // subscribe to time 
+    esp_mqtt_client_subscribe(client, "time", 1);  
 
 
 /* ------------------------------------------
@@ -108,47 +116,74 @@ TMP126 CONFIG!
     };
     ret = spi_device_polling_transmit(spi, &t);
     ESP_ERROR_CHECK(ret);
+    
+    vTaskDelay(1000);
+
+    // take tempurture measurement once to get early unexpected zero
+    ret = spi_device_polling_transmit(spi, &t);
+    ESP_ERROR_CHECK(ret); 
+
+    size_t time = 0;  
+    esp_mqtt_client_register_event(client, MQTT_EVENT_DATA, mqtt_event_handler, (void *)&time);
 
 
 
 /* ------------------------------------------
 RUN!!!
 ------------------------------------------ */
-    while(1){
+    while (1) {
 
-        ret = spi_device_polling_transmit(spi, &t);
-        ESP_ERROR_CHECK(ret);
-        u_int16_t raw_val = (((u_int16_t) rec[0]) << 8) + rec[1];
-        printf("TEMP Result: %d\n", raw_val);
+    ret = spi_device_polling_transmit(spi, &t);
+    ESP_ERROR_CHECK(ret);
+    u_int16_t raw_val = (((u_int16_t) rec[0]) << 8) + rec[1];
+    printf("TEMP Result: %d\n", raw_val);
 
-        int16_t shift = raw_val >> 2;
-        double result = shift * 0.03125;
-        printf("TEMP Result: %f\n", result);
-        char c_result[100];
+    int16_t shift = raw_val >> 2;
+    double result = shift * 0.03125;
+    printf("TEMP Result: %f\n", result);
+    char temp_string[20];
 
-        sprintf(c_result, "%f", result);
+    sprintf(temp_string, "%f", result);
 
-        // path format: teamX/nodeY/tempupdate
-        // data will be a string with three comma-separated fields: timestamp,temperature,battery
-        // Subtopic: teamJ
-        // Node 
-        // TODO: measure batteyr voltage... 
-        esp_mqtt_client_publish(client, "teamJ/node0/tempupdate", c_result, 6, 1, 1);
+    // size_t time = 0;  
+    // esp_mqtt_client_register_event(client, MQTT_EVENT_DATA, mqtt_event_handler, (void *)&time);
+
+    char time_string[10];
+    sprintf(time_string, "%d", time);
+
+    // Concatenate temp_string and time_string
+    char combined_string[50]; // Adjust size accordingly
+    snprintf(combined_string, sizeof(combined_string), "%s,%s,%s", temp_string, time_string, "0.00");
+
+    printf("Output string: %s\n", combined_string);
 
 
-        // configure ito deep sleep mode for an hour
-        // esp_sleep_enable_timer_wakeup(3600e6);
+    // path format: teamX/nodeY/tempupdate
+    // data will be a string with three comma-separated fields: timestamp,temperature,battery
+    // Subtopic: teamJ
+    int err = esp_mqtt_client_publish(client, "teamJ/node0/tempupdate", combined_string, 50, 2, 0);
+    // int err = esp_mqtt_client_publish(client, "teamJ/node0/tempupdate", "1715115061, 24.4, 96.02", 24, 1, 0);
 
-        // do for one minute for testing
-        esp_sleep_enable_timer_wakeup(60e6); 
-
-        printf("Entering deep sleep mode\n");
-        esp_deep_sleep_start();
-
-        // vTaskDelay(1000);
-        //vTaskDelay(1000 / portTICK_PERIOD_MS);
+    if (err != 0) {
+        printf("mqtt message failed :( \n"); 
     }
 
+
+    // configure ito deep sleep mode for an hour
+    // esp_sleep_enable_timer_wakeup(3600e6);
+
+    // do for one minute for testing
+    esp_sleep_enable_timer_wakeup(60e6); 
+    // // for 10 seconds for testing
+    // esp_sleep_enable_timer_wakeup(10e6); 
+
+    printf("Entering deep sleep mode\n");
+    esp_deep_sleep_start();
+
+    // vTaskDelay(1000);
+    // vTaskDelay(1000 / portTICK_PERIOD_MS);
+
+    }
 }
 
 
@@ -170,7 +205,7 @@ void write_temp_to_flash(double temp) {
         printf("Done\n");
 
         // Read current index from NVS
-        int index = 0;
+        int32_t index = 0;
         err = nvs_get_i32(my_handle, "index", &index);
         if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
             printf("Error reading index from NVS: %s\n", esp_err_to_name(err));
@@ -189,7 +224,7 @@ void write_temp_to_flash(double temp) {
             }
 
             temperatures[index] = temp; // Add temperature data to array
-            printf("Added temperature %.2f to index %d\n", temp, index);
+            printf("Added temperature %.2f to index %ld\n", temp, index);
             index++; // Move to next index
 
             // Write updated index to NVS
@@ -211,10 +246,10 @@ void write_temp_to_flash(double temp) {
             // Write temperature data to NVS
             printf("Writing temperature data to NVS... \n");
             char temp_name[20]; // Generate temperature name dynamically
-            snprintf(temp_name, sizeof(temp_name), "temp_%d", index);
+            snprintf(temp_name, sizeof(temp_name), "temp_%ld", index);
             err = nvs_set_blob(my_handle, temp_name, &temperatures[index], sizeof(float));
             if (err != ESP_OK) {
-                printf("Error writing temperature %d: %s\n", index, esp_err_to_name(err));
+                printf("Error writing temperature %ld: %s\n", index, esp_err_to_name(err));
             }
 
             // do for one minute for testing
@@ -237,3 +272,28 @@ void write_temp_to_flash(double temp) {
 
 
 
+// Define your event handler function
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
+    esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+    
+    switch (event_id) {
+        case MQTT_EVENT_CONNECTED:
+            printf("MQTT_EVENT_CONNECTED\n");
+            // Subscribe to topics, publish messages, etc.
+            break;
+        case MQTT_EVENT_DISCONNECTED:
+            printf("MQTT_EVENT_DISCONNECTED\n");
+            // Reconnect or handle disconnection
+            break;
+        case MQTT_EVENT_DATA:
+            printf("MQTT_EVENT_DATA\n");
+            event_data = event->data; 
+            printf("Topic: %.*s, Data: %.*s\n", event->topic_len, event->topic, event->data_len, event->data);
+            // Handle received data
+            break;
+        // Handle other MQTT events as needed
+        default:
+            printf("Other event id:%ld\n", event_id);
+            break;
+    }
+}
